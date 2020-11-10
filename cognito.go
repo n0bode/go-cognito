@@ -197,7 +197,7 @@ func (cog *Cognito) Authorized(token string) bool {
 
 	}
 
-	username, ok := claims["cognito.username"]
+	username, ok := claims["cognito:username"]
 	if !ok {
 		return true
 	}
