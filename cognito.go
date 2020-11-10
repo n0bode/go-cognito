@@ -19,12 +19,13 @@ import (
 
 // Cognito struct contains AWS info for cognito
 type Cognito struct {
-	userPoolID string
-	region     string
-	appID      string
-	keys       map[string]jwt.MapClaims
-	lock       *sync.RWMutex
-	parser     *jwt.Parser
+	userPoolID       string
+	region           string
+	appID            string
+	keys             map[string]jwt.MapClaims
+	onAuthentication AuthenticationHandler
+	lock             *sync.RWMutex
+	parser           *jwt.Parser
 }
 
 // New creates a cognito middleware
@@ -190,7 +191,22 @@ func (cog *Cognito) Authorized(token string) bool {
 	if claims["aud"].(string) != cog.appID {
 		return false
 	}
-	return true
+
+	if cog.onAuthentication == nil {
+		return true
+
+	}
+
+	username, ok := claims["cognito.username"]
+	if !ok {
+		return true
+	}
+	return cog.onAuthentication(username.(string))
+}
+
+// OnAuthentication it called when user is autenticated, uses to create a whitelist
+func (cog *Cognito) OnAuthentication(handler AuthenticationHandler) {
+	cog.onAuthentication = handler
 }
 
 // Handler middleware function to check cognito
