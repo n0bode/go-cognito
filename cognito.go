@@ -2,6 +2,7 @@ package cognito
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -24,6 +25,7 @@ type Cognito struct {
 	appID            string
 	keys             map[string]jwt.MapClaims
 	onAuthentication AuthenticationHandler
+	onUnathorized    http.HandlerFunc
 	lock             *sync.RWMutex
 	parser           *jwt.Parser
 }
@@ -137,10 +139,10 @@ func (cog *Cognito) RSAPublicKey(claims jwt.MapClaims) (*rsa.PublicKey, error) {
 }
 
 // Verify verify JWT token signature with JWK
-func (cog *Cognito) Verify(token string, jwk jwt.MapClaims) bool {
+func (cog *Cognito) Verify(token string, jwk jwt.MapClaims) error {
 	publicKey, err := cog.RSAPublicKey(jwk)
 	if err != nil {
-		return false
+		return err
 	}
 
 	split := strings.Split(token, ".")
@@ -148,32 +150,27 @@ func (cog *Cognito) Verify(token string, jwk jwt.MapClaims) bool {
 
 	signature, err := base64.RawURLEncoding.DecodeString(split[2])
 	if err != nil {
-		return false
+		return err
 	}
 
 	sum := sha256.Sum256(message)
-	err = rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, sum[:], signature)
-	if err != nil {
-		return false
-	}
-	return true
+	return rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, sum[:], signature)
 }
 
 // Authorized checks if token is authorized
-func (cog *Cognito) Authorized(token string) bool {
+func (cog *Cognito) Authorized(token string) (map[string]interface{}, bool) {
 	kid, claims, valid := cog.ParseJWT(token)
 	if !valid {
-		return false
+		return nil, false
 	}
 
 	jwk, exists := cog.ClaimsByKID(kid)
-
 	// if not exists, can be two things
 	// never gets keys yet
 	// or kid does not exist, but can exist now
 	if !exists {
 		if err := cog.LoadTokens(); err != nil {
-			return false
+			return nil, false
 		}
 		// gets claims again, checks if exists now
 		jwk, exists = cog.ClaimsByKID(kid)
@@ -181,27 +178,17 @@ func (cog *Cognito) Authorized(token string) bool {
 
 	// check again, cos it may get new keys
 	if !exists {
-		return false
+		return nil, false
 	}
 
-	if !cog.Verify(token, jwk) {
-		return false
+	if err := cog.Verify(token, jwk); err != nil {
+		return nil, false
 	}
 
 	if claims["aud"].(string) != cog.appID {
-		return false
+		return nil, false
 	}
-
-	if cog.onAuthentication == nil {
-		return true
-
-	}
-
-	username, ok := claims["cognito:username"]
-	if !ok {
-		return true
-	}
-	return cog.onAuthentication(username.(string))
+	return claims, cog.onAuthentication == nil || cog.onAuthentication(claims)
 }
 
 // OnAuthentication it called when user is autenticated, uses to create a whitelist
@@ -209,20 +196,41 @@ func (cog *Cognito) OnAuthentication(handler AuthenticationHandler) {
 	cog.onAuthentication = handler
 }
 
+func (cog *Cognito) OnUnathorized(handler http.HandlerFunc) {
+	cog.onUnathorized = handler
+}
+
 // Handler middleware function to check cognito
 func (cog *Cognito) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := GetAuthHeader(r)
+		unathorized := cog.onUnathorized
+
+		if unathorized == nil {
+			unathorized = func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusUnauthorized)
+			}
+		}
+
 		if token == "" {
-			w.WriteHeader(http.StatusUnauthorized)
+			unathorized(w, r)
 			return
 		}
 
-		if !cog.Authorized(token) {
-			w.WriteHeader(http.StatusUnauthorized)
+		claims, authorized := cog.Authorized(token)
+		if !authorized {
+			unathorized(w, r)
 			return
 		}
 
-		next.ServeHTTP(w, r)
+		nctx := context.WithValue(r.Context(), CtxClaimsVal, claims)
+		next.ServeHTTP(w, r.WithContext(nctx))
 	})
+}
+
+func GetClaims(ctx context.Context) map[string]interface{} {
+	if c, ok := ctx.Value(CtxClaimsVal).(map[string]interface{}); ok {
+		return c
+	}
+	return nil
 }

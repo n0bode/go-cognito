@@ -58,19 +58,19 @@ func TestCognito(t *testing.T) {
 	})
 
 	t.Run("Authorized", func(t *testing.T) {
-		if !cog.Authorized(token) {
+		if _, a := cog.Authorized(token); !a {
 			t.Fail()
 		}
 	})
 
 	t.Run("Unauthorized", func(t *testing.T) {
-		if cog.Authorized("0" + token) {
+		if _, a := cog.Authorized("0" + token); !a {
 			t.Fail()
 		}
 	})
 
 	t.Run("Handler", func(t *testing.T) {
-		if cog.Authorized("0" + token) {
+		if _, a := cog.Authorized("0" + token); !a {
 			t.Fail()
 		}
 	})
